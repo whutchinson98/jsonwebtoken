@@ -68,7 +68,7 @@ fn encode_with_extra_custom_header() {
         exp: OffsetDateTime::now_utc().unix_timestamp() + 10000,
     };
     let mut extras = HashMap::with_capacity(1);
-    extras.insert("custom".to_string(), "header".to_string());
+    extras.insert("custom".to_string(), serde_json::Value::String("header".to_string()));
     let header = Header { kid: Some("kid".to_string()), extras, ..Default::default() };
     let token = encode(&header, &my_claims, &EncodingKey::from_secret(b"secret")).unwrap();
     let token_data = decode::<Claims>(
@@ -79,7 +79,7 @@ fn encode_with_extra_custom_header() {
     .unwrap();
     assert_eq!(my_claims, token_data.claims);
     assert_eq!("kid", token_data.header.kid.unwrap());
-    assert_eq!("header", token_data.header.extras.get("custom").unwrap().as_str());
+    assert_eq!("header", token_data.header.extras.get("custom").unwrap().as_str().unwrap());
 }
 
 #[test]
@@ -91,8 +91,8 @@ fn encode_with_multiple_extra_custom_headers() {
         exp: OffsetDateTime::now_utc().unix_timestamp() + 10000,
     };
     let mut extras = HashMap::with_capacity(2);
-    extras.insert("custom1".to_string(), "header1".to_string());
-    extras.insert("custom2".to_string(), "header2".to_string());
+    extras.insert("custom1".to_string(), serde_json::Value::String("header1".to_string()));
+    extras.insert("custom2".to_string(), serde_json::Value::String("header2".to_string()));
     let header = Header { kid: Some("kid".to_string()), extras, ..Default::default() };
     let token = encode(&header, &my_claims, &EncodingKey::from_secret(b"secret")).unwrap();
     let token_data = decode::<Claims>(
@@ -104,8 +104,8 @@ fn encode_with_multiple_extra_custom_headers() {
     assert_eq!(my_claims, token_data.claims);
     assert_eq!("kid", token_data.header.kid.unwrap());
     let extras = token_data.header.extras;
-    assert_eq!("header1", extras.get("custom1").unwrap().as_str());
-    assert_eq!("header2", extras.get("custom2").unwrap().as_str());
+    assert_eq!("header1", extras.get("custom1").unwrap().as_str().unwrap());
+    assert_eq!("header2", extras.get("custom2").unwrap().as_str().unwrap());
 }
 
 #[test]
@@ -156,8 +156,51 @@ fn decode_token_custom_headers() {
     assert_eq!(my_claims, claims.claims);
     assert_eq!("kid", claims.header.kid.unwrap());
     let extras = claims.header.extras;
-    assert_eq!("header1", extras.get("custom1").unwrap().as_str());
-    assert_eq!("header2", extras.get("custom2").unwrap().as_str());
+    assert_eq!("header1", extras.get("custom1").unwrap().as_str().unwrap());
+    assert_eq!("header2", extras.get("custom2").unwrap().as_str().unwrap());
+}
+
+#[test]
+#[wasm_bindgen_test]
+fn decode_header_with_non_string_extras() {
+    // Regression test: headers with non-string values (arrays, objects, numbers) in extra
+    // fields must not fail deserialization. Previously extras was HashMap<String, String>
+    // which caused "invalid type: sequence, expected a string" for array values.
+    let my_claims = Claims {
+        sub: "b@b.com".to_string(),
+        company: "ACME".to_string(),
+        exp: OffsetDateTime::now_utc().unix_timestamp() + 10000,
+    };
+    let mut header = Header::default();
+    header.extras.insert(
+        "gty".to_string(),
+        serde_json::Value::Array(vec![
+            serde_json::Value::String("authorization_code".to_string()),
+            serde_json::Value::String("refresh_token".to_string()),
+        ]),
+    );
+    header
+        .extras
+        .insert("version".to_string(), serde_json::Value::Number(serde_json::Number::from(2)));
+
+    let token = encode(&header, &my_claims, &EncodingKey::from_secret(b"secret")).unwrap();
+
+    // decode_header must not fail on non-string extras
+    let decoded_header = decode_header(&token).unwrap();
+    let gty = decoded_header.extras.get("gty").expect("gty should be present");
+    assert!(gty.is_array(), "gty should be an array, got: {:?}", gty);
+    let version = decoded_header.extras.get("version").expect("version should be present");
+    assert_eq!(version, &serde_json::Value::Number(serde_json::Number::from(2)));
+
+    // Full round-trip decode must also work
+    let token_data = decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(b"secret"),
+        &Validation::new(Algorithm::HS256),
+    )
+    .unwrap();
+    assert_eq!(my_claims, token_data.claims);
+    assert!(token_data.header.extras.get("gty").unwrap().is_array());
 }
 
 #[test]
